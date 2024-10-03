@@ -1,0 +1,89 @@
+name: "Trigger Langgraph"
+
+on: pull_request
+
+jobs:
+  create-thread:
+    runs-on: ubuntu-latest
+    outputs:
+      thread_id: ${{ steps.generate-id.outputs.thread_id }}
+    steps:
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Generate Thread ID
+        id: generate-id
+        run: |
+          thread_id=$(curl -X POST "${{ secrets.NEURAL_URL }}/threads" \
+            -H "X-Api-Key: ${{ secrets.NEURAL_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{}' | jq -r '.thread_id')
+          echo "thread_id=$thread_id" >> $GITHUB_OUTPUT
+
+  run-updater:
+    needs: create-thread
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Extract PR Number and Repository Name
+        id: extract-vars
+        shell: bash
+        run: |
+          # Extract repository name
+          repo_name="${{ github.repository }}"
+          
+          # Extract pull request number from GITHUB_REF
+          github_ref="${{ github.ref }}"
+          pr_number=$(echo "$github_ref" | cut -d'/' -f3)
+
+          # Output the variables for debugging
+          echo "Repository Name: $repo_name"
+          echo "Pull Request Number: $pr_number"
+
+          # Set outputs
+          echo "pr_number=$pr_number" >> $GITHUB_OUTPUT
+          echo "repo_name=$repo_name" >> $GITHUB_OUTPUT
+
+      - name: Construct JSON Payload and Perform API Call
+        shell: bash
+        env:
+          PR_NUMBER: ${{ steps.extract-vars.outputs.pr_number }}
+          REPO_NAME: ${{ steps.extract-vars.outputs.repo_name }}
+          THREAD_ID: ${{ needs.create-thread.outputs.thread_id }}
+          NEURAL_URL: ${{ secrets.NEURAL_URL }}
+          NEURAL_API_KEY: ${{ secrets.NEURAL_API_KEY }}
+        run: |
+          # Construct the JSON payload
+          json_data=$(cat <<EOF
+          {
+            "assistant_id": "neural_pr_reviewer",
+            "input": {
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "{\"pr_number\":\"$PR_NUMBER\",\"repo_name\": \"$REPO_NAME\"}"
+                }
+              ]
+            },
+            "config": {
+              "tags": [],
+              "configurable": {}
+            },
+            "stream_mode": ["values"],
+            "feedback_keys": [],
+            "multitask_strategy": "reject"
+          }
+          EOF
+          )
+
+          # Optional: Print the JSON payload for debugging
+          echo "JSON Payload:"
+          echo "$json_data"
+
+          # Perform the API call
+          curl -X POST "$NEURAL_URL/threads/$THREAD_ID/runs" \
+            -H "X-Api-Key: $NEURAL_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$json_data"
